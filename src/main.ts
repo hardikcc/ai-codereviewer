@@ -4,15 +4,24 @@ import OpenAI from "openai";
 import { Octokit } from "@octokit/rest";
 import parseDiff, { Chunk, File } from "parse-diff";
 import minimatch from "minimatch";
+import { Groq } from "groq-sdk";
+import { sleep } from './utils'; // You'll need to create this utility function
 
 const GITHUB_TOKEN: string = core.getInput("GITHUB_TOKEN");
 const OPENAI_API_KEY: string = core.getInput("OPENAI_API_KEY");
+const GROQ_API_KEY: string = core.getInput("GROQ_API_KEY");
 const OPENAI_API_MODEL: string = core.getInput("OPENAI_API_MODEL");
+const API_MODEL: string = core.getInput("API_MODEL");
+const API_PROVIDER: string = core.getInput("API_PROVIDER");
 
 const octokit = new Octokit({ auth: GITHUB_TOKEN });
 
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
+});
+
+const groq = new Groq({
+  apiKey: GROQ_API_KEY,
 });
 
 interface PRDetails {
@@ -115,7 +124,6 @@ async function getAIResponse(prompt: string): Promise<Array<{
   reviewComment: string;
 }> | null> {
   const queryConfig = {
-    model: OPENAI_API_MODEL,
     temperature: 0.2,
     max_tokens: 700,
     top_p: 1,
@@ -123,27 +131,56 @@ async function getAIResponse(prompt: string): Promise<Array<{
     presence_penalty: 0,
   };
 
-  try {
-    const response = await openai.chat.completions.create({
-      ...queryConfig,
-      // return JSON if the model supports it:
-      ...(OPENAI_API_MODEL === "gpt-4-1106-preview"
-        ? { response_format: { type: "json_object" } }
-        : {}),
-      messages: [
-        {
-          role: "system",
-          content: prompt,
-        },
-      ],
-    });
+  const maxRetries = 3;
+  let retries = 0;
+  let delay = 1000; // Start with a 1 second delay
 
-    const res = response.choices[0].message?.content?.trim() || "{}";
-    return JSON.parse(res).reviews;
-  } catch (error) {
-    console.error("Error:", error);
-    return null;
+  while (retries < maxRetries) {
+    try {
+      let response;
+      if (API_PROVIDER === "openai") {
+        response = await openai.chat.completions.create({
+          ...queryConfig,
+          model: API_MODEL,
+          messages: [
+            {
+              role: "system",
+              content: prompt,
+            },
+          ],
+        });
+      } else if (API_PROVIDER === "groq") {
+        response = await groq.chat.completions.create({
+          ...queryConfig,
+          model: API_MODEL,
+          messages: [
+            {
+              role: "system",
+              content: prompt,
+            },
+          ],
+        });
+      } else {
+        throw new Error("Unsupported API provider");
+      }
+
+      const res = response.choices[0].message?.content?.trim() || "{}";
+      return JSON.parse(res).reviews;
+    } catch (error : any) {
+      if (error.response && error.response.status === 429) {
+        console.warn(`Rate limit exceeded. Retrying in ${delay / 1000} seconds...`);
+        await sleep(delay);
+        retries++;
+        delay *= 2; // Exponential backoff
+      } else {
+        console.error("Error:", error);
+        return null;
+      }
+    }
   }
+
+  console.error("Max retries reached. Unable to get AI response.");
+  return null;
 }
 
 function createComment(
@@ -233,13 +270,15 @@ async function main() {
   });
 
   const comments = await analyzeCode(filteredDiff, prDetails);
-  if (comments.length > 0) {
+  if (comments && comments.length > 0) {
     await createReviewComment(
       prDetails.owner,
       prDetails.repo,
       prDetails.pull_number,
       comments
     );
+  } else {
+    console.log("No comments generated or an error occurred during analysis.");
   }
 }
 
