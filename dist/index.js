@@ -90,6 +90,7 @@ function getDiff(owner, repo, pull_number) {
             mediaType: { format: "diff" },
         });
         // @ts-expect-error - response.data is a string
+        //console.log('Diff:', response.data);
         return response.data;
     });
 }
@@ -145,6 +146,7 @@ ${chunk.changes
 function getAIResponse(prompt) {
     var _a, _b;
     return __awaiter(this, void 0, void 0, function* () {
+        console.log('Prompt:', prompt);
         const queryConfig = {
             temperature: 0.2,
             max_tokens: 700,
@@ -178,7 +180,13 @@ function getAIResponse(prompt) {
                     throw new Error("Unsupported API provider");
                 }
                 const res = ((_b = (_a = response.choices[0].message) === null || _a === void 0 ? void 0 : _a.content) === null || _b === void 0 ? void 0 : _b.trim()) || "{}";
-                return JSON.parse(res).reviews;
+                try {
+                    return JSON.parse(res).reviews;
+                }
+                catch (jsonError) {
+                    console.error("Failed to parse AI response as JSON:", res);
+                    return null;
+                }
             }
             catch (error) {
                 if (error.response && error.response.status === 429) {
